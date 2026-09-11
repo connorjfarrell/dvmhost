@@ -28,7 +28,12 @@ RTPFNEHeader::RTPFNEHeader() :
     m_subFunc(NET_SUBFUNC::NOP),
     m_streamId(0U),
     m_peerId(0U),
-    m_messageLength(0U)
+    m_messageLength(0U),
+    m_qualityPresent(false),
+    m_qualityFlags(QUALITY_FLAG::NONE),
+    m_ber(0U),
+    m_rssi(0U),
+    m_qualityProtocol(QUALITY_PROTOCOL::P25)
 {
     /* stub */
 }
@@ -44,7 +49,8 @@ bool RTPFNEHeader::decode(const uint8_t* data)
     assert(data != nullptr);
 
     RTPExtensionHeader::decode(data);
-    if (m_payloadLength != RTP_FNE_HEADER_LENGTH_EXT_LEN) {
+    if (m_payloadLength != RTP_FNE_HEADER_LENGTH_EXT_LEN &&
+        m_payloadLength != RTP_FNE_HEADER_LENGTH_EXT_QUALITY_LEN) {
         return false;
     }
 
@@ -59,6 +65,20 @@ bool RTPFNEHeader::decode(const uint8_t* data)
     m_peerId = GET_UINT32(data, 12U);                                           // Peer ID
     m_messageLength = GET_UINT32(data, 16U);                                    // Message Length
 
+    // quality-extended (5-word) form - see the class remarks in RTPFNEHeader.h
+    m_qualityPresent = (m_payloadLength == RTP_FNE_HEADER_LENGTH_EXT_QUALITY_LEN);
+    if (m_qualityPresent) {
+        m_qualityFlags = data[20U];                                            // Quality Flags
+        m_ber = data[21U];                                                     // BER
+        m_rssi = data[22U];                                                    // RSSI
+        m_qualityProtocol = data[23U];                                         // Quality Protocol
+    } else {
+        m_qualityFlags = QUALITY_FLAG::NONE;
+        m_ber = 0U;
+        m_rssi = 0U;
+        m_qualityProtocol = QUALITY_PROTOCOL::P25;
+    }
+
     return true;
 }
 
@@ -69,7 +89,7 @@ void RTPFNEHeader::encode(uint8_t* data)
     assert(data != nullptr);
 
     m_payloadType = DVM_FRAME_START;
-    m_payloadLength = RTP_FNE_HEADER_LENGTH_EXT_LEN;
+    m_payloadLength = m_qualityPresent ? RTP_FNE_HEADER_LENGTH_EXT_QUALITY_LEN : RTP_FNE_HEADER_LENGTH_EXT_LEN;
     RTPExtensionHeader::encode(data);
 
     data[4U] = (m_crc16 >> 8) & 0xFFU;                                          // CRC-16 MSB
@@ -80,4 +100,20 @@ void RTPFNEHeader::encode(uint8_t* data)
     SET_UINT32(m_streamId, data, 8U);                                           // Stream ID
     SET_UINT32(m_peerId, data, 12U);                                            // Peer ID
     SET_UINT32(m_messageLength, data, 16U);                                     // Message Length
+
+    // quality-extended (5-word) form - only emitted when explicitly requested, so every
+    // existing caller keeps producing byte-identical 4-word output
+    if (m_qualityPresent) {
+        data[20U] = m_qualityFlags;                                            // Quality Flags
+        data[21U] = m_ber;                                                     // BER
+        data[22U] = m_rssi;                                                    // RSSI
+        data[23U] = m_qualityProtocol;                                         // Quality Protocol
+    }
+}
+
+/* Total encoded length of this header in bytes. */
+
+uint32_t RTPFNEHeader::size() const
+{
+    return RTP_EXTENSION_HEADER_LENGTH_BYTES + (static_cast<uint32_t>(m_payloadLength) * 4U);
 }

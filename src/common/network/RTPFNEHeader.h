@@ -30,6 +30,15 @@
 #define RTP_FNE_HEADER_LENGTH_BYTES 16
 #define RTP_FNE_HEADER_LENGTH_EXT_LEN 4
 
+// Quality-extended form: one additional 32-bit word (Quality Flags | BER | RSSI |
+// Quality Protocol) carrying a per-hop signal-quality report. This is used ONLY on
+// links that have negotiated it (see the "qualityReporting" RPTC capability flag) -
+// every existing caller keeps sending/receiving the unextended 4-word form untouched.
+// Not part of the upstream DVMProject protocol; added for a downstream voting
+// comparator project ("dvmvoter", https://github.com/connorjfarrell/dvmvoter).
+#define RTP_FNE_HEADER_LENGTH_QUALITY_BYTES 20
+#define RTP_FNE_HEADER_LENGTH_EXT_QUALITY_LEN 5
+
 #define RTP_END_OF_CALL_SEQ 65535
 
 namespace network
@@ -133,6 +142,36 @@ namespace network
         };
     };
 
+    /**
+     * @brief Quality-extended RTPFNEHeader flag bits (byte 0 of the quality word).
+     *  Explicit validity bits, not sentinel values, so "never arrived" is unambiguous
+     *  from "arrived and reported clean". See RTPFNEHeader::getQualityPresent().
+     * @ingroup network_core
+     */
+    namespace QUALITY_FLAG {
+        enum ENUM : uint8_t {
+            NONE = 0x00U,                           //!< No quality flags set
+
+            RSSI_VALID = 0x01U,                     //!< bit0 - RSSI byte is valid
+            BER_VALID = 0x02U,                      //!< bit1 - BER byte is valid
+            // remaining bits reserved
+        };
+    };
+
+    /**
+     * @brief Quality-extended RTPFNEHeader protocol byte (byte 3 of the quality word).
+     *  Reserves room for a future non-P25 voting extension without another wire-format
+     *  break; only P25 is defined today.
+     * @ingroup network_core
+     */
+    namespace QUALITY_PROTOCOL {
+        enum ENUM : uint8_t {
+            P25 = 0x00U,                            //!< P25 (only defined value today)
+            // DMR/analog values intentionally undefined - do not assign one without
+            // coordinating with the downstream project that consumes this extension
+        };
+    };
+
     namespace frame
     {
         // ---------------------------------------------------------------------------
@@ -161,8 +200,21 @@ namespace network
          *     +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
          *     | Message Length                                                |
          *     +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
-         * 20 bytes (16 bytes without RTP Extension Header)
+         *     | Quality Flags | BER (0-255)   | RSSI (0-255)  | Quality Proto.| (quality-extended form only)
+         *     +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+         * 20 bytes (16 bytes without RTP Extension Header), or 24/20 bytes for the
+         * quality-extended form (getQualityPresent() == true)
          * \endcode
+         *
+         * The quality word is an opt-in extension: decode() accepts both the standard
+         * 4-word payload and the 5-word quality-extended payload (discriminated by
+         * payloadLength, exactly like every other length-versioned decode in this class),
+         * and encode() only emits the 5th word when setQualityPresent(true) has been
+         * called - every existing caller that never touches the quality fields continues
+         * to produce byte-identical 4-word output. Not part of the upstream DVMProject
+         * protocol; added for a downstream voting comparator project ("dvmvoter",
+         * https://github.com/connorjfarrell/dvmvoter) - see that project's
+         * docs/UPSTREAM.md for the full rationale.
          */
         class HOST_SW_API RTPFNEHeader : public RTPExtensionHeader {
         public:
@@ -185,6 +237,13 @@ namespace network
              * @param[out] data Buffer to encode an RTP FNE header.
              */
             void encode(uint8_t* data) override;
+
+            /**
+             * @brief Total encoded length of this header in bytes (RTP extension header +
+             *  FNE body), derived from payloadLength - callers should use this instead of
+             *  assuming a fixed size, since it varies with getQualityPresent().
+             */
+            uint32_t size() const;
 
         public:
             /**
@@ -211,6 +270,33 @@ namespace network
              * @brief Traffic Message Length.
              */
             DECLARE_PROPERTY(uint32_t, messageLength, MessageLength);
+
+            /**
+             * @brief Flag indicating whether the quality-extended (5-word) form is used.
+             *  Setting this true is what makes encode() emit the quality word; decode()
+             *  sets it based on the payloadLength actually received. See the class remarks
+             *  above - this is a downstream ("dvmvoter") extension, opt-in per link.
+             */
+            DECLARE_PROPERTY(bool, qualityPresent, QualityPresent);
+            /**
+             * @brief Quality Flags bitfield (see the QUALITY_FLAG namespace) - which of
+             *  BER/RSSI below are actually valid. Only meaningful when getQualityPresent().
+             */
+            DECLARE_PROPERTY(uint8_t, qualityFlags, QualityFlags);
+            /**
+             * @brief Bit error rate, 0-255 scale, lower is better, valid only if
+             *  QUALITY_FLAG::BER_VALID is set in qualityFlags.
+             */
+            DECLARE_PROPERTY(uint8_t, ber, BER);
+            /**
+             * @brief Received signal strength, 0-255 magnitude (DFSI-style representation),
+             *  lower is better, valid only if QUALITY_FLAG::RSSI_VALID is set in qualityFlags.
+             */
+            DECLARE_PROPERTY(uint8_t, rssi, RSSI);
+            /**
+             * @brief Quality protocol/mode (see the QUALITY_PROTOCOL namespace).
+             */
+            DECLARE_PROPERTY(uint8_t, qualityProtocol, QualityProtocol);
         };
     } // namespace frame
 } // namespace network

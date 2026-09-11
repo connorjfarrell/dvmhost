@@ -118,10 +118,13 @@ UInt8Array FrameQueue::read(int& messageLength, sockaddr_storage& address, uint3
             *fneHeader = _fneHeader;
         }
 
-        // copy message
+        // copy message - offset by the FNE header's actual encoded size (RTPFNEHeader::size()),
+        // not a fixed constant, so a quality-extended (5-word) header's message payload is
+        // found at the right place; every non-quality-reporting caller still gets
+        // RTP_EXTENSION_HEADER_LENGTH_BYTES + RTP_FNE_HEADER_LENGTH_BYTES exactly as before
         messageLength = _fneHeader.getMessageLength();
         UInt8Array message = std::unique_ptr<uint8_t[]>(new uint8_t[messageLength]);
-        ::memcpy(message.get(), buffer + (RTP_HEADER_LENGTH_BYTES + RTP_EXTENSION_HEADER_LENGTH_BYTES + RTP_FNE_HEADER_LENGTH_BYTES), messageLength);
+        ::memcpy(message.get(), buffer + (RTP_HEADER_LENGTH_BYTES + _fneHeader.size()), messageLength);
 
         uint16_t calc = edac::CRC::createCRC16(message.get(), messageLength * 8U);
         if (calc != _fneHeader.getCRC()) {
@@ -290,6 +293,12 @@ uint8_t* FrameQueue::generateMessage(const uint8_t* message, uint32_t length, ui
         }
     }
 
+    // fneHeader below is always default-constructed (qualityPresent == false), so this stays
+    // exactly RTP_EXTENSION_HEADER_LENGTH_BYTES + RTP_FNE_HEADER_LENGTH_BYTES for every caller
+    // today; a caller that wants to emit the quality-extended form would need this sized from
+    // fneHeader.size() instead, which needs fneHeader built before bufferLen is computed -
+    // left for whoever threads quality data through this path (a downstream project's concern,
+    // see RTPFNEHeader.h), not done speculatively here.
     uint32_t bufferLen = RTP_HEADER_LENGTH_BYTES + RTP_EXTENSION_HEADER_LENGTH_BYTES + RTP_FNE_HEADER_LENGTH_BYTES + length;
     uint8_t* buffer = new uint8_t[bufferLen];
     ::memset(buffer, 0x00U, bufferLen);
